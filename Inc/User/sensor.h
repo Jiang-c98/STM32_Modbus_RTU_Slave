@@ -1,3 +1,10 @@
+/**
+ * @file    sensor.h
+ * @brief   Sensor模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #ifndef __SENSOR_H
 #define __SENSOR_H
 #include "main.h"

@@ -1,6 +1,18 @@
+/**
+ * @file    led.c
+ * @brief   LED控制模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #include "User\led.h"
 #include "User\rs485_modbus.h"
 
+/* 私有变量 */
+static uint8_t led_is_on;
+static uint32_t led_off_time;
+
+//LED全亮
 void LED_ALL_On(void)
 {
   HAL_GPIO_WritePin(GPIOA, LED1, GPIO_PIN_RESET);
@@ -10,6 +22,7 @@ void LED_ALL_On(void)
 	HAL_GPIO_WritePin(GPIOA, Buzzer, GPIO_PIN_SET);
 }
 
+//亮灯
 void LED_ON(uint8_t led_step)
 {
 	switch(led_step)
@@ -26,6 +39,7 @@ void LED_ON(uint8_t led_step)
 	}
 }
 
+//灯全灭
 void LED_ALL_Off(void)
 {
   HAL_GPIO_WritePin(GPIOA, LED1, GPIO_PIN_SET);
@@ -44,9 +58,6 @@ void LED_River(uint8_t *step_value){
   *step_value = (*step_value + 1)%3;//0 1 2 3
 }
 
-
-static uint8_t led_is_on;
-static uint32_t led_off_time;
 //LED1+蜂鸣器工作
 void LED_Alert_Request(uint32_t duration_ms)
 {

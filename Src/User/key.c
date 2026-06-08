@@ -1,5 +1,11 @@
+/**
+ * @file    key.c
+ * @brief   按键控制模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #include "FreeRTOS.h"
-//#include "queue.h"
 #include "semphr.h"
 #include "User\key.h"
 #include "usart.h"//打印使用
@@ -9,6 +15,10 @@ KeyEvent_t key;//按键
 QueueHandle_t xKeySemaphore;//定义按键队列句柄-信号量
 QueueHandle_t xKeyQueue;
 
+/**
+ * @brief key 初始化
+ * @note 创建二值量、创建队列、按键状态初值
+ */
 void Key_Init(void){
 	//中断发信号，任务收信号的效果，用二值信号量
   xKeySemaphore = xSemaphoreCreateBinary();
@@ -21,17 +31,24 @@ void Key_Init(void){
 	}
 }
 
-//外部中断PA0
+/**
+ * @brief 外部中断PA0
+ * @note 按键触发传递标志位作用
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-	HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);//测试
+//	HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);//测试
 	BaseType_t xHigherPriorityTaskWoken = pdFALSE;	
 	//如果队列操作有触发更高优先级的任务，第二个参数置为pdTURE
 	//中断触发给锁-二值量
 	xSemaphoreGiveFromISR(xKeySemaphore, &xHigherPriorityTaskWoken);
+	//若参数位pdTRUE，中断结束且到更高优先级任务
 	portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-//按键扫描RTOS
+/**
+ * @brief 按键扫描函数
+ * @note 双边沿中断，获取二值量、读GPIO状态、非阻塞计时的时间差判断长短按，再发送队列
+ */
 void Key_Scan(void){
 	static uint32_t press_start_time = 0;
   static uint8_t press_state = 0;
@@ -47,7 +64,7 @@ void Key_Scan(void){
 				if(duration > 1000){
 				  key.key_event = 1;//长按
 				}else{
-				  key.key_event = 0;
+				  key.key_event = 0;//短按
 				}
         xQueueSend(xKeyQueue, &key, 0);
 			}
@@ -57,15 +74,11 @@ void Key_Scan(void){
 	}
 }
 
-//获取开关值
-uint8_t Key_event_status(void){
-  return key.key_event;
-}
+////获取开关值
+//uint8_t Key_event_status(void){
+//  return key.key_event;
+//}
 
-//写入开关值
-void Key_event_change(uint8_t set_value){
-  key.key_event = set_value;
-}
 
 //逻辑代码，逻辑可复用先注释掉
 //uint8_t Key_Scan(void)

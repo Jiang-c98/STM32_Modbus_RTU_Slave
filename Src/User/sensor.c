@@ -1,27 +1,44 @@
+/**
+ * @file    sensor.c
+ * @brief   Sensor模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #include "User\sensor.h"
 #include "User\rs485_modbus.h"
 
-MedianFilter_t light_filter;
-MedianFilter_t temp_filter;
-//QueueHandle_t xSensorDataQueue;//定义队列句柄
+/* 私有变量 */
+static MedianFilter_t light_filter;
+static MedianFilter_t temp_filter;
+
 extern ADC_HandleTypeDef hadc1;
 
+/* 私有函数声明 */
 static void Sensor_AdcSetCh(uint32_t channel);
 static uint16_t Sensor_ReadTemp(void);
 static uint16_t Sensor_ReadLight(void);
 static uint16_t Sensor_Filtle_Handle(uint16_t new_value, MedianFilter_t *filter);
 
+/**
+ * @brief 采集光敏/热敏数据，经中值滤波后更新到Modbus寄存器（地址0/1）
+ * @note 本函数由传感器任务周期性调用（建议周期200ms）
+ */
 void Sensor_Handle(void){
-	//获取传感器数据，并且中值滤波处理
+	//获取传感器原始数据，中值滤波处理
   uint32_t light_value = Sensor_Filtle_Handle(Sensor_ReadLight(), &light_filter);
 	uint32_t temp_value  = Sensor_Filtle_Handle(Sensor_ReadTemp(), &temp_filter);
 	
-	//保存采集的数据到寄存器
+	//保存滤波后的数据到寄存器
 	RS485_Modbus_SetReg(0, light_value);
 	RS485_Modbus_SetReg(1, temp_value);
 }
 
-//单通道获取-设置通道
+/**
+ * @brief 手动切换ADC通道（单通道模式）
+ * @param channel ADC通道号（如ADC_CHANNEL_8、ADC_CHANNEL_9）
+ * @note 切换前会停止ADC，切换后重新调用HAL_ADC_Start
+ */
 static void Sensor_AdcSetCh(uint32_t channel){
 	//停止ADC采集
 	HAL_ADC_Stop(&hadc1);
@@ -36,7 +53,11 @@ static void Sensor_AdcSetCh(uint32_t channel){
 	}
 }	
 
-//热敏adc电压采样  -单通道获取adc
+/**
+ * @brief 热敏adc电压采样
+ * @param void
+ * @retval 采集的电压值adc_value
+ */
 static uint16_t Sensor_ReadTemp(void){
 	Sensor_AdcSetCh(ADC_CHANNEL_9);
   uint16_t adc_value;
@@ -49,7 +70,11 @@ static uint16_t Sensor_ReadTemp(void){
 	return adc_value;
 }
 
-//光敏adc电压采样
+/**
+ * @brief 光敏adc电压采样
+ * @param void
+ * @retval 采集的电压值adc_value
+ */
 static uint16_t Sensor_ReadLight(void){
 	Sensor_AdcSetCh(ADC_CHANNEL_8);
 	uint16_t adc_value;
@@ -62,7 +87,13 @@ static uint16_t Sensor_ReadLight(void){
 	return adc_value;
 }
 
-//中值滤波
+/**
+ * @brief 中值滤波
+ * @param new_value 新的数据
+ * @param filter 结构体指针
+ * @retval 返回5次数据值中间位置的
+ * @note 获取5次数据后滤波效果正常，但是整体系统中影响较小
+ */
 static uint16_t Sensor_Filtle_Handle(uint16_t new_value, MedianFilter_t *filter){
   uint8_t i, j;
 	uint16_t temp[FILTER_SIZE];

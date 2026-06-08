@@ -1,7 +1,11 @@
+/**
+ * @file    rs485_modbus.c
+ * @brief   RS485、Modbus协议通信模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #include "User\rs485_modbus.h"
-
-static void BuildExceptionResponse(uint8_t *frame, uint8_t errcode);
-static void Modbus_SendResponse(uint8_t *frame, uint8_t len);
 
 //Modbus
 //CRC校验查表法
@@ -49,18 +53,25 @@ uint8_t auchCRCLo[] =
 0x40
 };
 
+/* 私有变量声明 */
 //寄存器需要加锁，防止读取时读到部分旧值和新值
 static SemaphoreHandle_t xRegMutex = NULL;//定义互斥锁
-
-static void RS485_SetMode(uint8_t rw_status);
-uint16_t holding_registers[] = {0, 0, 0, 0, 0};//前两个分别是光敏、热敏、后三个写寄存器
-uint8_t Modbus_RxData[RX_BUF_SIZE];
+static uint16_t holding_registers[] = {0, 0, 0, 0, 0};//前两个分别是光敏、热敏、后三个写寄存器
+static uint8_t Modbus_RxData[RX_BUF_SIZE];
 static volatile uint16_t Modbus_rxWrite_index;//缓存区写指针
 static volatile uint16_t Modbus_rxRead_index;//缓存区读指针
-uint8_t Modbus_byte;
+static uint8_t Modbus_byte;
 static uint32_t last_rx_time;
 
-//初始化
+/* 私有函数声明 */
+static void BuildExceptionResponse(uint8_t *frame, uint8_t errcode);
+static void Modbus_SendResponse(uint8_t *frame, uint8_t len);
+static void RS485_SetMode(uint8_t rw_status);
+
+/**
+ * @brief 初始化
+ * @note 设置读RS485状态、串口中断开始接收、互斥锁创建、
+ */
 void Modbus_Init(void){
 	RS485_SetMode(0);
   HAL_UART_Receive_IT(&huart3, &Modbus_byte, 1);
@@ -70,7 +81,10 @@ void Modbus_Init(void){
 	}
 }
 
-//读写控制函数
+/**
+ * @brief RS485读写控制函数
+ * @param 0为读状态，1为写状态
+ */
 static void RS485_SetMode(uint8_t rw_status){
   if(rw_status == 0){
 	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);
@@ -79,21 +93,37 @@ static void RS485_SetMode(uint8_t rw_status){
 	}
 }
 
-//CRC检验
+/**
+ * @brief CRC检验
+ * @param buffer 数据指针
+ * @param length 数据长度
+ * @return CRC16 值
+ */
 static uint16_t CRC16(uint8_t *buffer, uint16_t len){
   uint8_t crcHigh = 0xFF;
 	uint8_t crcLow = 0xFF;
 	uint8_t index;
 	while(len--){
+		//第一次0xFF和第一个数据异或
+		//第二次用上一次的crcHigh和buffer第二个数据异或
     index = crcHigh ^ *buffer;
 		buffer++;
+		//0xFF和CRC高字节表里的值异或
 		crcHigh = crcLow ^ auchCRCHi[index];
+		//低位直接查低字节表
 		crcLow = auchCRCLo[index];
 	}
 	return (crcHigh << 8) | crcLow;
 }
 
-//中断函数
+/**
+ * @brief 串口3中断函数
+ * @param huart 串口指针
+ * @return CRC16 值
+ * @note 调用逻辑，USART3_IRQHandler-->HAL_UART_IRQHandler-->
+ * UART_Receive_IT(huart)-->HAL_UART_RxCpltCallback(huart)
+ * @note 环形缓冲区方式，写指针存储串口接收的数据
+ */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
   if(huart->Instance == USART3){
 		HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
@@ -113,7 +143,13 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	}
 }
 
-//Modbus数据帧解析
+/**
+ * @brief Modbus数据帧解析
+ * @param frame 数据指针
+ * @param length 数据长度
+ * @return 无返回
+ * @note 判断数据帧长度、CRC校验、地址匹配、功能项是否支持，再处理发送数据帧给主机
+ */
 static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
   //小于4个字节无效数据帧
 	if(len < 4)return;
@@ -141,6 +177,7 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 			if(start_addr > 2){
 				//异常帧处理，寄存器地址超范围
 				BuildExceptionResponse(frame, 0x02);
+				break;
 			}
 			uint8_t response[5+ reg_count*2];//地址、功能、数据长度、检验值两字节
 			response[0] = SLAVE_ADDRESS;
@@ -161,16 +198,18 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 		//功能：写单个寄存器
 		case 0x06:
 		{
-		  uint16_t start_addr = ((uint16_t)frame[4] << 8 | frame[5]);
+		  uint16_t start_addr = ((uint16_t)frame[2] << 8 | frame[3]);
 			uint16_t reg_value = ((uint16_t)frame[4] << 8 | frame[5]);
-			if(start_addr > 0 && start_addr < 2){
+			if(start_addr != 2){
 				//地址超范围
 	      BuildExceptionResponse(frame, 0x02);
+				break;
 	    }
 			
 			if(reg_value > 2){
 				//寄存器数值超范围
 			  BuildExceptionResponse(frame, 0x03);
+				break;
 			}
 			
 			RS485_Modbus_SetReg(2, reg_value);
@@ -187,11 +226,12 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 			//地址是否越界
 			if(start_addr < 2 && start_addr > 4 ){
 			  BuildExceptionResponse(frame, 0x02);
+				break;
 			}
 			
 			//写数据到寄存器
 			for(uint8_t i = 0; i < reg_count; i++){
-			  uint16_t reg_value = (frame[7] << 8) | frame[8];
+			  uint16_t reg_value = (frame[7 + i*2] << 8) | frame[8 + i*2];
 				RS485_Modbus_SetReg(i + start_addr, reg_value);
 			}
 			
@@ -206,6 +246,7 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 			response[6] = (crc_response >> 8) & 0xFF;
 			response[7] = crc_response & 0xFF;
 			Modbus_SendResponse(response, 8);
+			break;
 		}
 		
 		default:
@@ -213,7 +254,10 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 	}
 }
 
-//Modbus定时器
+/**
+ * @brief Modbus定时器
+ * @note 缓存区内容存在否、数据帧是否结束、拷贝缓冲区内容到临时变量处理
+ */
 void RS485_Modbus_Time(void){
   static uint32_t last_check_time;
 	uint32_t now = HAL_GetTick();
@@ -240,7 +284,12 @@ void RS485_Modbus_Time(void){
 	}
 }
 
-//设置寄存器
+/**
+ * @brief 设置寄存器
+ * @param addr 寄存器地址
+ * @param value 数据
+ * @note 寄存器有长度，在写入数据前加互斥锁，写完在释放互斥锁
+ */
 void RS485_Modbus_SetReg(uint16_t addr, uint16_t value){
 	xSemaphoreTake(xRegMutex, portMAX_DELAY);
   if(addr > 10)return;
@@ -260,11 +309,17 @@ uint16_t RS485_Modbus_GetReg(uint16_t addr){
 	return value;
 }
 
-//常见异常码0x01 非法功能码
-//0x02 非法数据地址
-//0x03 非法数据值
-//从机地址 功能码|0x80 异常码 CRC两个字节
+/**
+ * @brief 异常帧处理函数
+ * @param frame 数据指针
+ * @param errcode 错误码
+ * @note 数据帧异常时调用，并返回错误码
+ */
 static void BuildExceptionResponse(uint8_t *frame, uint8_t errcode){
+	//常见异常码0x01 非法功能码
+	//0x02 非法数据地址
+	//0x03 非法数据值
+	//从机地址 功能码|0x80 异常码 CRC两个字节
   uint8_t except[5];
 	except[0] = frame[0];
 	except[1] = frame[1] | 0x80;
@@ -275,15 +330,27 @@ static void BuildExceptionResponse(uint8_t *frame, uint8_t errcode){
   Modbus_SendResponse(except, 5);//发送数据
 }
 
+/**
+ * @brief RS485数据发送函数
+ * @param date 数据指针
+ * @param len 数据长度
+ * @param timeout_ms 超时时间
+ * @note 打包发送函数，加了判断处理串口发送超时情况
+ */
 static void RS485_Send(uint8_t *data, uint16_t len, uint32_t timeout_ms){
+  //RS485写状态
   RS485_SetMode(1);
 	if(HAL_UART_Transmit(&huart3, data, len, timeout_ms) != HAL_OK){
+    //超时回复读状态并返回
 	  RS485_SetMode(0);
 		return;
 	}
 	uint32_t start = HAL_GetTick();
 	while(__HAL_UART_GET_FLAG(&huart3, UART_FLAG_TC) == RESET){
+		//串口数据正在发送或尚未完全发送出去时，TC 标志位是 RESET（0）
+		//如果此时串口线断开，不加超时判断会卡死
 	  if(HAL_GetTick() - start > timeout_ms){
+			//超时处理
 		  RS485_SetMode(0);
 			return;
 		}
@@ -291,7 +358,7 @@ static void RS485_Send(uint8_t *data, uint16_t len, uint32_t timeout_ms){
 	RS485_SetMode(0);
 }
 
-//Modbus回复
+//Modbus回复封装函数
 static void Modbus_SendResponse(uint8_t *frame, uint8_t len){
   RS485_Send(frame, len, 100);
 }

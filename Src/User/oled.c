@@ -1,76 +1,105 @@
+/**
+ * @file    oled.c
+ * @brief   Oled模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #include "User\oled.h"
 #include "User\key.h"
 #include "User\rs485_modbus.h"
 #include "string.h"
 
+/* 私有常量 */
 #define OLED_ADDR 0x3C 
 #define OLED_WRITE_ADDR (0x3C << 1)  
 
+/* 外部变量声明 */
 extern I2C_HandleTypeDef hi2c1;
 extern uint8_t mainMenuSelection;
+
 u8g2_t u8g2;
 
+/* 私有函数声明 */
 static void OLED_ShowTempInfo(uint16_t temp);
 static void OLED_ShowLightTest(uint16_t percent);
 static void OLED_ShowMenu(uint8_t hand);
 static void Manual_Sendbuffer(u8g2_t *u8g2);
 
-//OLED初始化
+/**
+ * @brief OLED 初始化
+ * @note 通过I2C总线将初始化参数按照命令字节+参数格式发送
+ */
 void OLED_Init(void){
   printf("OLED_Init...\r\n");
-  uint8_t init_cmds[] = {
-			0xAE,       // 关闭显示
-			0xD5, 0x80, // 时钟分频
-			0xA8, 0x3F, // 多路复用率（64行）
-			0xD3, 0x00, // 显示偏移
-			0x40,       // 起始行
-			0x8D, 0x14, // 电荷泵使能（关键！）
-			0xA1,       // 段重映射
-			0xC8,       // COM 扫描方向
-			0xDA, 0x12, // COM 引脚配置
-			0x81, 0xCF, // 对比度
-			0xD9, 0xF1, // 预充电周期
-			0xDB, 0x40, // VCOM 电压
-		  0x20, 0x02, // 【关键】设置为页寻址模式 (Page Addressing Mode)
-			0xA4,       // 全局显示开启
-			0xA6,       // 正常显示（非反色）
-			0xAF        // 开启显示
-	};
-	for(uint8_t i = 0; i < sizeof(init_cmds); i++)
-	{
-	  uint8_t buf[2] = {0x00, init_cmds[i]};
-		if(HAL_I2C_Master_Transmit(&hi2c1, OLED_WRITE_ADDR, buf, 2, 100) != HAL_OK)
-		{
-		   printf("HAL_I2C_Master_Transmit failed!...\r\n");
-		}
+	//方法1:初始化参数
+//  uint8_t init_cmds[] = {
+//			0xAE,       // 关闭显示
+//			0xD5, 0x80, // 时钟分频
+//			0xA8, 0x3F, // 多路复用率（64行）
+//			0xD3, 0x00, // 显示偏移
+//			0x40,       // 起始行
+//			0x8D, 0x14, // 电荷泵使能（关键！）
+//			0xA1,       // 段重映射
+//			0xC8,       // COM 扫描方向
+//			0xDA, 0x12, // COM 引脚配置
+//			0x81, 0xCF, // 对比度
+//			0xD9, 0xF1, // 预充电周期
+//			0xDB, 0x40, // VCOM 电压
+//		  0x20, 0x02, // 【关键】设置为页寻址模式 (Page Addressing Mode)
+//			0xA4,       // 全局显示开启
+//			0xA6,       // 正常显示（非反色）
+//			0xAF        // 开启显示
+//	};
+//	for(uint8_t i = 0; i < sizeof(init_cmds); i++)
+//	{
+//	  uint8_t buf[2] = {0x00, init_cmds[i]};
+//		if(HAL_I2C_Master_Transmit(&hi2c1, OLED_WRITE_ADDR, buf, 2, 100) != HAL_OK)
+//		{
+//		   printf("HAL_I2C_Master_Transmit failed!...\r\n");
+//		}
 
-		HAL_Delay(1);
-	}
+//		HAL_Delay(1);
+//	}
 	
+	//注册回调函数，但是Sendbuffer存在问题，使用了
 	u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0,  My_U8x8_I2c_HwSend,  My_gpio_and_delay_cb);
+	//方法二:u8g2库函数初始化
 	u8g2_InitDisplay(&u8g2);
+	//清理u8g2本地映射的显存空间
 	u8g2_ClearBuffer(&u8g2);
+	//手动发送buffer给oled的显存空间
 	Manual_Sendbuffer(&u8g2);	
 }
 
-//UI显示函数
+/**
+ * @brief UI显示函数
+ * @param menustate 菜单状态机
+ * @note 由菜单状态机决定当前显示界面
+ */
 void OLED_UpdateDisplay(MenuState_t menustate){
   switch(menustate){
 	  case STATE_MENU:
+			//主菜单
 			OLED_ShowMenu(mainMenuSelection);
 			break;
 		
 		case STATE_LIGHT_SENSOR:
+			//光敏测试，获取寄存器值
 			OLED_ShowLightTest(RS485_Modbus_GetReg(0));
 			break;
 		
 		case STATE_TEMP_SENSOR:
+			//热敏测试
 			OLED_ShowTempInfo(RS485_Modbus_GetReg(1));
 			break;
 	}
 }
 
-//光敏测试界面
+/**
+ * @brief 光敏测试界面
+ * @param percent 传感器数据
+ */
 static void OLED_ShowLightTest(uint16_t percent){
   char buf[32];
 	u8g2_ClearBuffer(&u8g2);//清理ram上的显存镜像空间
@@ -81,11 +110,14 @@ static void OLED_ShowLightTest(uint16_t percent){
 	snprintf(buf, sizeof(buf), "Light value:%d", percent);//拼接字符换后传递给buf数组
 	u8g2_DrawStr(&u8g2, 0, 26, buf);//从第一列开始，16高度下开始
 
-  u8g2_DrawStr(&u8g2, 0, 42, "Press RESET exit!");
+  u8g2_DrawStr(&u8g2, 0, 42, "Long press to exit!");
 	Manual_Sendbuffer(&u8g2);
 }
 
-//热敏测试界面
+/**
+ * @brief 热敏测试界面
+ * @param percent 传感器数据
+ */
 static void OLED_ShowTempInfo(uint16_t temp){
   char buffer[32];
 	u8g2_ClearBuffer(&u8g2);
@@ -99,11 +131,14 @@ static void OLED_ShowTempInfo(uint16_t temp){
 //	snprintf(buffer, sizeof(buffer), "Thresh: %d",threshold);
 //	u8g2_DrawStr(&u8g2, 0, 42, buffer);
 	
-	u8g2_DrawStr(&u8g2, 0, 42, "Press RESET exit");
+	u8g2_DrawStr(&u8g2, 0, 42, "Long press to exit");
 	Manual_Sendbuffer(&u8g2);
 }
 
-//主菜单界面
+/**
+ * @brief 主菜单界面
+ * @param hand 实际指针箭头
+ */
 static void OLED_ShowMenu(uint8_t hand)
 {
 		u8g2_ClearBuffer(&u8g2);
@@ -121,10 +156,23 @@ static void OLED_ShowMenu(uint8_t hand)
 		Manual_Sendbuffer(&u8g2);
 }
 
-
-//u8g2回调函数，但是存在问题，使用手动发送方式
+/**
+ * @brief u8g2库 i2c 硬件传输回调函数
+ * @param u8x8 u8g2底层结构体指针
+ * @param msg  消息类型，决定本次调用的动作
+ *                - U8X8_MSG_BYTE_INIT: 初始化，重置缓存索引
+ *                - U8X8_MSG_BYTE_START_TRANSFER: 开始一次传输，重置缓存索引
+ *                - U8X8_MSG_BYTE_SEND: 收到数据/命令，先存入缓存区
+ *                - U8X8_MSG_BYTE_END_TRANSFER: 传输结束，打包并发送 I2C 数据
+ * @param arg_int 数据长度
+ * @param arg_ptr 数据指针，指向要发送的字节
+ * @retval 1 固定返回成功
+ * @note 本函数使用静态缓存区将多次u8g2合并为一次I2C发送
+ *       根据第一个字节判断判断命令（0x00）还是数据（0x40）
+ */
 uint8_t My_U8x8_I2c_HwSend(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
 {
+	//u8g2库i2c回调函数，但是存在问题，目前使用的都是手动发送方式
   static uint8_t buf[128];//缓存空间
 	static uint8_t buf_idx = 0;//缓存指引
 	uint8_t *data;
@@ -150,8 +198,8 @@ uint8_t My_U8x8_I2c_HwSend(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg
 		case U8X8_MSG_BYTE_END_TRANSFER:
 		{	
 		  uint8_t send_buf[buf_idx + 1];
-//命令的特征：在 U8g2 中，所有命令字节都是 小于 0x80 的，而且肯定不是 0x40（因为 0x40 是有特殊用途的控制字节）。
-//数据的特征：显示数据通常是 0x80 ~ 0xFF 之间的值（像素数据），或者偶尔是 0x40 这个特殊值
+      //命令的特征：在 U8g2 中，所有命令字节都是 小于 0x80 的，而且肯定不是 0x40（因为 0x40 是有特殊用途的控制字节）。
+      //数据的特征：显示数据通常是 0x80 ~ 0xFF 之间的值（像素数据），或者偶尔是 0x40 这个特殊值
 			if((buf[0] < 0x80)&&(buf[0] != 0x40))
 			{
 			  send_buf[0] = 0x00;
@@ -160,8 +208,8 @@ uint8_t My_U8x8_I2c_HwSend(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg
 			}
 			memcpy(&send_buf[1], buf, buf_idx);//send_buf第一个数组成员是0x00或者0x40
 			HAL_I2C_Master_Transmit(&hi2c1, OLED_WRITE_ADDR, send_buf, buf_idx + 1, 100);
-		  }	
 			break;
+		}	
 		
 		default:
 			break;
@@ -169,7 +217,14 @@ uint8_t My_U8x8_I2c_HwSend(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg
 	return 1;
 }
 
-//u8g2注册回调函数时的延时函数
+/**
+ * @brief u8g2库的延时和GPIO控制回调函数（硬件抽象层）
+ * @param u8x8 指向u8g2底层结构体指针
+ * @param msg  消息类型，U8X8_MSG_DELAY_MILLI 表示毫秒延时
+ * @param arg_int 延时毫秒数
+ * @param arg_ptr 消息的指针参数（未使用）
+ * @retval 1 固定返回成功
+ */
 uint8_t My_gpio_and_delay_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
 {
   switch(msg)
@@ -190,7 +245,15 @@ uint8_t My_gpio_and_delay_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *a
 	return 1;
 }
 
-//手动发送到OLED显存
+/**
+ * @brief 手动发送到OLED显存
+ * @param u8g2 指向u8g2底层结构体指针，可用于获取本地缓冲区地址
+ * @note 本函数通过页寻址方式0xB0开始，设置先低后高，发送数据到OLED显存
+ *       1.发送页地址命令（0xB0~0xB7）
+ *       2.发送列地址（低4位和高四位，从0列开始）
+ *       3.连续发送128个字节数据（对应当前页的一整行）
+ *       4.数据包格式；[0x40]+[128字节现存数据]共129个字节
+ */
 static void Manual_Sendbuffer(u8g2_t *u8g2)
 {
   

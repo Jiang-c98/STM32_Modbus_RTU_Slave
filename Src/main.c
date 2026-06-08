@@ -123,7 +123,7 @@ int main(void)
 	}
 
 	//创建OLED任务
-	if(xTaskCreate(vOLED_Task, "Oled", 256, NULL, 2, NULL) != pdPASS){
+  if(xTaskCreate(vOLED_Task, "Oled", 256, NULL, 2, NULL) != pdPASS){
 	  printf("vOLED_Task create failed\r\n");
 	}
 	

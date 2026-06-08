@@ -1,3 +1,11 @@
+/**
+ * @file    led.h
+ * @brief   LED控制模块
+ * @author  Cui Jiang
+ * @version 1.0
+ * @date    2025-06-07
+ */
+ 
 #ifndef __LED_H
 #define __LED_H
 #include "stdint.h"

@@ -1,7 +1,13 @@
+/**
+ * @file    key.h
+ * @brief   按键控制模块
+ * @author  Cui Jiang
+ * @date    2025-06-07
+ */
+ 
 #ifndef __KEY_H
 #define __KEY_H
 #include "stdint.h"
-
 
 //GPIOA
 #define Key1 GPIO_PIN_0
@@ -22,6 +28,5 @@ typedef struct{
 
 void Key_Init(void);
 void Key_Scan(void);
-uint8_t Key_event_status(void);
-void Key_event_change(uint8_t set_value);
+
 #endif
