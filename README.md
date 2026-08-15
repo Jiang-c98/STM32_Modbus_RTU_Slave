@@ -49,18 +49,30 @@
 - **WiFi 控制**：ESP-01S AT 指令状态机 + TCP Server，手机通过 TCP 客户端发送指令。
 - **蓝牙控制**：JDY-31 透传模式，手机通过蓝牙串口 APP 发送指令。
 
+
 ## 代码结构
 Core/Src/User/
+
 ├── share_data.c # 共享寄存器池
+
 ├── wifi_esp01.c # ESP-01S WiFi 驱动
+
 ├── bluetooth_jdy31.c # JDY-31 蓝牙驱动
+
 ├── rs485_modbus.c # Modbus RTU 协议栈
+
 ├── dht22.c # DHT22 传感器驱动
+
 ├── sensor.c # ADC 采集
+
 ├── oled.c # SSD1306 显示
+
 ├── key.c # 按键检测
-├── servo.c # 舵机 PWM 控制
-├── stepper.c # 步进电机控制
+
+├── servo.c # 舵机 PWM 控制 
+
+├── stepper.c # 步进电机控制 
+
 └── menu_state.c # 菜单状态机
 
 ## 视频演示
