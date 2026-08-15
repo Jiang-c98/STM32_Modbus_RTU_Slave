@@ -4,8 +4,10 @@
  * @author  Cui Jiang
  * @date    2025-06-07
  */
- 
-#include "User\rs485_modbus.h"
+
+/* 头文件包含 */
+#include "User/rs485_modbus.h"
+#include "User/share_data.h"
 
 //Modbus
 //CRC校验查表法
@@ -54,31 +56,51 @@ uint8_t auchCRCLo[] =
 };
 
 /* 私有变量声明 */
-//寄存器需要加锁，防止读取时读到部分旧值和新值
-static SemaphoreHandle_t xRegMutex = NULL;//定义互斥锁
-static uint16_t holding_registers[] = {0, 0, 0, 0, 0};//前两个分别是光敏、热敏、后三个写寄存器
 static uint8_t Modbus_RxData[RX_BUF_SIZE];
 static volatile uint16_t Modbus_rxWrite_index;//缓存区写指针
 static volatile uint16_t Modbus_rxRead_index;//缓存区读指针
-static uint8_t Modbus_byte;
 static uint32_t last_rx_time;
+
+/* 全局变量 */
+uint8_t Modbus_byte;
 
 /* 私有函数声明 */
 static void BuildExceptionResponse(uint8_t *frame, uint8_t errcode);
 static void Modbus_SendResponse(uint8_t *frame, uint8_t len);
 static void RS485_SetMode(uint8_t rw_status);
+static void RS485_Modbus_SetReg(uint16_t addr, uint16_t value);
+static void RS485_Modbus_GetReg(uint16_t addr, uint16_t *value);
+static void RS485_Modbus_Time(void);
+
+/**
+ * @brief Modbus任务
+ * @note Modbus任务
+ */
+void vModbus_Task(void *pvParameters){
+  for(;;){
+	  RS485_Modbus_Time();
+    vTaskDelay(pdMS_TO_TICKS(10));
+	}
+}
+
+/**
+ * @brief Modbus任务
+ * @note 启动Modbus功能
+ */
+void StartModbusTask(void){
+	//创建Modbus任务
+	if(xTaskCreate(vModbus_Task, "modbus", 512, NULL, 2, NULL) != pdPASS){
+		printf("vModbus_Task create failed\r\n");
+	}
+}
 
 /**
  * @brief 初始化
- * @note 设置读RS485状态、串口中断开始接收、互斥锁创建、
+ * @note 设置读RS485状态、串口中断开始接收
  */
 void Modbus_Init(void){
 	RS485_SetMode(0);
   HAL_UART_Receive_IT(&huart3, &Modbus_byte, 1);
-	xRegMutex = xSemaphoreCreateMutex();
-	if(xRegMutex == NULL){
-	//预留
-	}
 }
 
 /**
@@ -87,10 +109,25 @@ void Modbus_Init(void){
  */
 static void RS485_SetMode(uint8_t rw_status){
   if(rw_status == 0){
-	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);
+	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
 	}else{
-	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET);
+	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
 	}
+}
+
+/**
+ * @brief 读写保持寄存器值
+ * @param addr 地址
+ * @param value 变量
+ * @note  调用过共享数据的接口写入或者读出
+ */
+static void RS485_Modbus_SetReg(uint16_t addr, uint16_t value){
+  //调用共享数据的接口,写入数据
+	ShareData_SetReg(addr, value);
+}
+static void RS485_Modbus_GetReg(uint16_t addr, uint16_t *value){
+  //共享数据接口，读出
+  *value = ShareData_GetReg(addr);
 }
 
 /**
@@ -124,23 +161,41 @@ static uint16_t CRC16(uint8_t *buffer, uint16_t len){
  * UART_Receive_IT(huart)-->HAL_UART_RxCpltCallback(huart)
  * @note 环形缓冲区方式，写指针存储串口接收的数据
  */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
-  if(huart->Instance == USART3){
-		HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
-	  //中间变量next_index
-		uint16_t next_index = (Modbus_rxWrite_index + 1) % RX_BUF_SIZE;
-		
-		//防止写超过读指针
-		if(next_index == Modbus_rxRead_index){
-		  //环形缓冲方式 读指针+1
-			Modbus_rxRead_index = (Modbus_rxRead_index + 1) % RX_BUF_SIZE;
-		}
-		
-		Modbus_RxData[Modbus_rxWrite_index] = Modbus_byte;
-		Modbus_rxWrite_index = next_index;
-		last_rx_time = HAL_GetTick();
-		HAL_UART_Receive_IT(&huart3, &Modbus_byte, 1);
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+//  if(huart->Instance == USART3){
+//		HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_5);
+//	  //中间变量next_index
+//		uint16_t next_index = (Modbus_rxWrite_index + 1) % RX_BUF_SIZE;
+//		
+//		//防止写超过读指针
+//		if(next_index == Modbus_rxRead_index){
+//		  //环形缓冲方式 读指针+1
+//			Modbus_rxRead_index = (Modbus_rxRead_index + 1) % RX_BUF_SIZE;
+//		}
+//		
+//		Modbus_RxData[Modbus_rxWrite_index] = Modbus_byte;
+//		Modbus_rxWrite_index = next_index;
+//		last_rx_time = HAL_GetTick();
+//		HAL_UART_Receive_IT(&huart3, &Modbus_byte, 1);
+//	}
+//}
+
+/**
+ * @brief Modbus数据帧数据存入缓冲区
+ * @param data 1个字节数据
+ * @return 无返回
+ * @note 缓冲区Modbus_RxData
+ */
+void Modbus_rx_push(uint8_t data){
+  uint16_t next_index = (Modbus_rxWrite_index + 1) % RX_BUF_SIZE;
+
+	if(next_index == Modbus_rxRead_index){
+	  Modbus_rxRead_index = (Modbus_rxRead_index + 1) % RX_BUF_SIZE;
 	}
+	
+	Modbus_RxData[Modbus_rxWrite_index] = Modbus_byte;
+	Modbus_rxWrite_index = next_index;
+	last_rx_time = HAL_GetTick();
 }
 
 /**
@@ -174,7 +229,7 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 		{
 		  uint16_t start_addr = (frame[2] << 8) | frame[3];
 			uint16_t reg_count  = (frame[4] << 8) | frame[5];
-			if(start_addr > 2){
+			if(start_addr > 3){
 				//异常帧处理，寄存器地址超范围
 				BuildExceptionResponse(frame, 0x02);
 				break;
@@ -184,7 +239,8 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 			response[1] = 0x03;
 			response[2] = reg_count * 2;
 			for(uint8_t i = 0; i < reg_count; i++){
-				uint16_t reg_value = holding_registers[start_addr + i];
+				uint16_t reg_value;
+				RS485_Modbus_GetReg(start_addr + i, &reg_value);
 			  response[3 + i*2] = (reg_value >> 8) & 0xFF;
 				response[4 + i*2] = reg_value & 0xFF;
 			}
@@ -200,19 +256,19 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 		{
 		  uint16_t start_addr = ((uint16_t)frame[2] << 8 | frame[3]);
 			uint16_t reg_value = ((uint16_t)frame[4] << 8 | frame[5]);
-			if(start_addr != 2){
+			if(start_addr < 4 && start_addr >20){
 				//地址超范围
 	      BuildExceptionResponse(frame, 0x02);
 				break;
 	    }
-			
-			if(reg_value > 2){
+
+			if(reg_value > 180){
 				//寄存器数值超范围
 			  BuildExceptionResponse(frame, 0x03);
 				break;
 			}
 			
-			RS485_Modbus_SetReg(2, reg_value);
+			RS485_Modbus_SetReg(start_addr, reg_value);
 			Modbus_SendResponse(frame, len);
 			break;
 		}
@@ -224,7 +280,7 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 			uint16_t reg_count  = ((uint16_t)frame[4] << 8 | frame[5]);
 			
 			//地址是否越界
-			if(start_addr < 2 && start_addr > 4 ){
+			if(start_addr < 4 && start_addr > 20 ){
 			  BuildExceptionResponse(frame, 0x02);
 				break;
 			}
@@ -234,7 +290,6 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
 			  uint16_t reg_value = (frame[7 + i*2] << 8) | frame[8 + i*2];
 				RS485_Modbus_SetReg(i + start_addr, reg_value);
 			}
-			
 			uint8_t response[8];
 			response[0] = SLAVE_ADDRESS;
 			response[1] = 0x10;
@@ -258,7 +313,7 @@ static void RS485_Modbus_Parse(uint8_t *frame, uint16_t len){
  * @brief Modbus定时器
  * @note 缓存区内容存在否、数据帧是否结束、拷贝缓冲区内容到临时变量处理
  */
-void RS485_Modbus_Time(void){
+static void RS485_Modbus_Time(void){
   static uint32_t last_check_time;
 	uint32_t now = HAL_GetTick();
 	if(now - last_check_time < 1)return;
@@ -272,7 +327,6 @@ void RS485_Modbus_Time(void){
 	
 	//数据帧长度
 	uint16_t frame_len = (RX_BUF_SIZE - Modbus_rxRead_index + Modbus_rxWrite_index) % RX_BUF_SIZE;
-	
 	if(frame_len > 0){
 	  uint8_t frame[RX_BUF_SIZE];
 		for(uint8_t i = 0; i < frame_len; i++){
@@ -282,31 +336,6 @@ void RS485_Modbus_Time(void){
 		Modbus_rxRead_index = Modbus_rxWrite_index;
 		RS485_Modbus_Parse(frame, frame_len);
 	}
-}
-
-/**
- * @brief 设置寄存器
- * @param addr 寄存器地址
- * @param value 数据
- * @note 寄存器有长度，在写入数据前加互斥锁，写完在释放互斥锁
- */
-void RS485_Modbus_SetReg(uint16_t addr, uint16_t value){
-	xSemaphoreTake(xRegMutex, portMAX_DELAY);
-  if(addr > 10)return;
-	
-	holding_registers[addr] = value;
-	xSemaphoreGive(xRegMutex);
-}
-
-//获取寄存器内容
-uint16_t RS485_Modbus_GetReg(uint16_t addr){
-	uint16_t value = 0;
-  if(addr > 10)return 0;
-
-	xSemaphoreTake(xRegMutex, portMAX_DELAY);//加锁
-	value = holding_registers[addr];
-	xSemaphoreGive(xRegMutex);
-	return value;
 }
 
 /**

@@ -16,8 +16,5 @@
 #define LED4 GPIO_PIN_5//PA5
 #define Buzzer GPIO_PIN_6//PA6
 
-void LED_ALL_On(void);
-void LED_ALL_Off(void);
-void LED_ON(uint8_t led_step);
-void LED_River(uint8_t *step_value);
+void StartLedTask(void);
 #endif

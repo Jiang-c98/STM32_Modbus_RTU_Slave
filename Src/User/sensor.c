@@ -4,34 +4,64 @@
  * @author  Cui Jiang
  * @date    2025-06-07
  */
- 
-#include "User\sensor.h"
-#include "User\rs485_modbus.h"
+
+/* 头文件包含 */
+#include "User/sensor.h"
+#include "User/share_data.h"
 
 /* 私有变量 */
 static MedianFilter_t light_filter;
 static MedianFilter_t temp_filter;
 
+/* 外部变量声明 */
 extern ADC_HandleTypeDef hadc1;
 
 /* 私有函数声明 */
+static void Sensor_Handle(void);
 static void Sensor_AdcSetCh(uint32_t channel);
 static uint16_t Sensor_ReadTemp(void);
 static uint16_t Sensor_ReadLight(void);
 static uint16_t Sensor_Filtle_Handle(uint16_t new_value, MedianFilter_t *filter);
 
 /**
+ * @brief Sensor任务
+ * @note Sensor任务
+ */
+void vSensor_Task(void *Parameters){
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+	const TickType_t xFrequency = pdMS_TO_TICKS(200);
+	for(;;){
+		Sensor_Handle();
+		
+		//绝对延时200ms，会考虑到其他任务执行消耗的时间并计算在内
+		vTaskDelayUntil(&xLastWakeTime, xFrequency);
+		//vTaskDelay(pdMS_TO_TICKS(500));//相对延时500ms
+	}
+}
+
+/**
+ * @brief LED任务
+ * @note  启动sensor任务
+ */
+void StartSensorTask(void){
+	//创建Sensor任务
+	if(xTaskCreate(vSensor_Task, "Sensor", 256, NULL, 2, NULL) != pdPASS){
+    printf("vSensor_Task create failed\r\n");
+	}
+}
+
+/**
  * @brief 采集光敏/热敏数据，经中值滤波后更新到Modbus寄存器（地址0/1）
  * @note 本函数由传感器任务周期性调用（建议周期200ms）
  */
-void Sensor_Handle(void){
+static void Sensor_Handle(void){
 	//获取传感器原始数据，中值滤波处理
   uint32_t light_value = Sensor_Filtle_Handle(Sensor_ReadLight(), &light_filter);
 	uint32_t temp_value  = Sensor_Filtle_Handle(Sensor_ReadTemp(), &temp_filter);
 	
 	//保存滤波后的数据到寄存器
-	RS485_Modbus_SetReg(0, light_value);
-	RS485_Modbus_SetReg(1, temp_value);
+	ShareData_SetReg(0, light_value);
+	ShareData_SetReg(1, temp_value);
 }
 
 /**

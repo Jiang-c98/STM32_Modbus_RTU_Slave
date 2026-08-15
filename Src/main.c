@@ -20,18 +20,26 @@
 #include "main.h"
 #include "cmsis_os.h"
 #include "adc.h"
+#include "can.h"
 #include "i2c.h"
+#include "tim.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "User\led.h"
-#include "User\key.h"
-#include "User\sensor.h"
-#include "User\oled.h"
-#include "User\rs485_modbus.h"
-#include "User\menu_state.h"
+#include "User/led.h"
+#include "User/key.h"
+#include "User/sensor.h"
+#include "User/oled.h"
+#include "User/rs485_modbus.h"
+#include "User/menu_state.h"
+#include "User/DHT22.h"
+//#include "User/wifi_esp01.h"
+#include "User/share_data.h"
+#include "User/bluetooth_jdy31.h"
+#include "User/servo.h"
+#include "User/stepper.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -52,21 +60,14 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-MenuState_t currentMenu;//菜单状态机
-uint8_t mainMenuSelection = 2;//菜单前的标志箭头,0-light,1-temp,2无箭头
-extern QueueHandle_t xKeyQueue;//按键队列句柄
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-void vSensor_Task(void *Parameters);
-void vOLED_Task(void *pvParameters);
-void vLED_Task(void *pvParameter);
-void vKey_Task(void * Parameters);
-void vModbus_Task(void *pvParameters);
-void HanldeKeyEvent(KeyEvent_t *key);
+void StartAllTasks(void);
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName);
 /* USER CODE END PFP */
 
@@ -108,32 +109,24 @@ int main(void)
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_USART3_UART_Init();
+  MX_CAN_Init();
+  MX_USART2_UART_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
-	OLED_Init();
+	OLed_Init();
 	Modbus_Init();
 	Key_Init();
+	DHT22_Init();
+	BT_Init();
+	Servo_Init();
+	Stepper_Init();
+//  Wifi_Init();
+	ShareData_init();
 	
-	//创建Sensor任务
-	if(xTaskCreate(vSensor_Task, "Sensor", 256, NULL, 2, NULL) != pdPASS){
-    printf("vSensor_Task create failed\r\n");
-	}
-	//创建LED任务
-  if(xTaskCreate(vLED_Task, "led", 128, NULL, 2, NULL) != pdPASS){
-	  printf("vLED_Task create failed\r\n");
-	}
-
-	//创建OLED任务
-  if(xTaskCreate(vOLED_Task, "Oled", 256, NULL, 2, NULL) != pdPASS){
-	  printf("vOLED_Task create failed\r\n");
-	}
+	StartAllTasks();
 	
-	//创建Key任务
-	if(xTaskCreate(vKey_Task, "key", 256, NULL, 1, NULL) != pdPASS){
-		printf("Key Task create failed!");
-	}
-	
-	//创建Modbus任务
-	xTaskCreate(vModbus_Task, "modbus", 512, NULL, 1, NULL);
+	//查看剩余堆大小
+	printf("Free heap: %d bytes\r\n", xPortGetFreeHeapSize());
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
@@ -202,78 +195,17 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void vSensor_Task(void *Parameters){
-  TickType_t xLastWakeTime = xTaskGetTickCount();
-	const TickType_t xFrequency = pdMS_TO_TICKS(200);
-	for(;;){
-		Sensor_Handle();
-		
-		//绝对延时200ms，会考虑到其他任务执行消耗的时间并计算在内
-		vTaskDelayUntil(&xLastWakeTime, xFrequency);
-		//vTaskDelay(pdMS_TO_TICKS(500));//相对延时500ms
-	}
-}
-
-//按键任务
-void vKey_Task(void * Parameters){
-	for(;;){
-		Key_Scan();
-		vTaskDelay(pdMS_TO_TICKS(20));
-	}
-}
-
-//OLED显示任务
-void vOLED_Task(void *pvParameters){	
-	//调试阶段,任务入口打印栈余量
-	//UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
-  KeyEvent_t key_receive;
-	for(;;){
-		OLED_UpdateDisplay(currentMenu);
-    if(xQueueReceive(xKeyQueue, &key_receive, pdMS_TO_TICKS(200)) == pdTRUE){
-		  //状态机处理
-			HanldeKeyEvent(&key_receive);
-		}
-		vTaskDelay(pdMS_TO_TICKS(10));
-	}
-}
-
-//LED任务
-void vLED_Task(void *pvParameter){
-	printf("vLED_Task start\r\n");
-	TickType_t lastWakeTime = xTaskGetTickCount();
-//  uint8_t step = 0;
-	for(;;){
-//    LED_River(&step);//流水灯
-		vTaskDelay(pdMS_TO_TICKS(200));
-	}
-}
-
-//Modbus任务
-void vModbus_Task(void *pvParameters){
-  for(;;){
-	  RS485_Modbus_Time();
-    vTaskDelay(pdMS_TO_TICKS(10));
-	}
-}
-
-//按键菜单状态机
-void HanldeKeyEvent(KeyEvent_t *key){
-  switch(currentMenu){
-	  case STATE_MENU:
-			if(key->key_event == 0){
-        mainMenuSelection = (mainMenuSelection == 0)? 1:0;
-			}else if(key->key_event == 1){
-			  currentMenu = (mainMenuSelection == 0)?STATE_LIGHT_SENSOR:STATE_TEMP_SENSOR;
-			}
-			break;
-			
-		case STATE_LIGHT_SENSOR:
-		case STATE_TEMP_SENSOR:
-			if(key->key_event == 1){
-			  currentMenu = STATE_MENU;
-			}
-			break;
-	}
+void StartAllTasks(void){
+	StartSensorTask();
+	StartLedTask();
+	StartOledTask();
+  StartModbusTask();
+	StartKeyTask();
+	StartDHT22Task();
+	StartBTTask();
+	StartServoTask();
+//  StartWifiTask();
+	StartStepperTask();
 }
 
 //堆栈溢出测试函数
@@ -286,7 +218,7 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
 
 /**
   * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM4 interrupt took place, inside
+  * @note   This function is called  when TIM1 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
   * a global variable "uwTick" used as application time base.
   * @param  htim : TIM handle
@@ -297,7 +229,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM4)
+  if (htim->Instance == TIM1)
   {
     HAL_IncTick();
   }

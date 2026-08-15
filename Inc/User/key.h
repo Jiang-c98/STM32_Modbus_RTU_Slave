@@ -8,6 +8,9 @@
 #ifndef __KEY_H
 #define __KEY_H
 #include "stdint.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "queue.h"
 
 //GPIOA
 #define Key1 GPIO_PIN_0
@@ -21,12 +24,14 @@
 //消抖时间
 #define KEY_DEBOUNCE_TIME 20
 
+extern QueueHandle_t xKeyQueue;//按键队列句柄
+
 typedef struct{
   uint8_t key_code;//按键码
 	uint8_t key_event;//事件0=短按，1=长按
 }KeyEvent_t;
 
 void Key_Init(void);
-void Key_Scan(void);
+void StartKeyTask(void);
 
 #endif

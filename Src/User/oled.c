@@ -4,15 +4,18 @@
  * @author  Cui Jiang
  * @date    2025-06-07
  */
- 
-#include "User\oled.h"
-#include "User\key.h"
-#include "User\rs485_modbus.h"
-#include "string.h"
 
-/* 私有常量 */
+/* 头文件包含 */
+#include "User/oled.h"
+#include <string.h>
+#include "User/key.h"
+#include "User/share_data.h"
+#include "i2c.h"
+
+/* 私有宏定义 */
 #define OLED_ADDR 0x3C 
 #define OLED_WRITE_ADDR (0x3C << 1)  
+#define OLED_REFRESH_INTERVAL_MS  10
 
 /* 外部变量声明 */
 extern I2C_HandleTypeDef hi2c1;
@@ -21,51 +24,131 @@ extern uint8_t mainMenuSelection;
 u8g2_t u8g2;
 
 /* 私有函数声明 */
+static void OLED_UpdateDisplay(MenuState_t menustate);
+static void HanldeKeyEvent(KeyEvent_t *key);
 static void OLED_ShowTempInfo(uint16_t temp);
 static void OLED_ShowLightTest(uint16_t percent);
+static void OLED_ShowDHT22info(void);
 static void OLED_ShowMenu(uint8_t hand);
 static void Manual_Sendbuffer(u8g2_t *u8g2);
+
+/**
+ * @brief OLED显示任务
+ * @note  OLED显示任务
+          OLED 刷新率分析（2026-08-15）
+          - I2C 400kHz 下，传输 1024 字节约需 29ms
+          - 加上任务调度开销，实际刷新率约 14~15Hz
+          - 人眼观看稳定（>12Hz），相机拍摄时（快门速度 1/50s 以上）会出现闪烁
+          - 如需消除拍照闪烁，建议更换 SPI 接口 OLED 或实现增量刷新
+ */
+void vOLed_Task(void *pvParameters){	
+	//调试阶段,任务入口打印栈余量
+	//UBaseType_t uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+  KeyEvent_t key_receive;
+	uint32_t last_refresh_time;
+	for(;;){
+    if(xQueueReceive(xKeyQueue, &key_receive, pdMS_TO_TICKS(5)) == pdTRUE){
+		  //状态机处理
+			HanldeKeyEvent(&key_receive);
+			OLED_UpdateDisplay(currentMenu);
+			last_refresh_time = HAL_GetTick();
+		}
+
+		if(HAL_GetTick() - last_refresh_time > OLED_REFRESH_INTERVAL_MS){
+      //uint32_t start = HAL_GetTick();
+		  OLED_UpdateDisplay(currentMenu);
+      //uint32_t elsped = HAL_GetTick() - start;
+			//i2c发数据需要33ms 1000/33 =30.3，start两次间隔无法满足30Hz要求，手机拍摄会闪烁
+      //printf("OLED refresh time: %d  start=%d\r\n", elsped, start);
+			last_refresh_time = HAL_GetTick();
+		}
+	  vTaskDelay(pdMS_TO_TICKS(200));
+	}
+}
+
+/**
+ * @brief OLED任务
+ * @note 启动OLED功能
+ */
+void StartOledTask(void){
+	//创建OLED任务
+  if(xTaskCreate(vOLed_Task, "Oled", 256, NULL, 2, NULL) != pdPASS){
+	  printf("vOLED_Task create failed\r\n");
+	}
+}
+
+/**
+ * @brief 按键菜单状态机
+ * @note  根据按键切换状态
+ */
+static void HanldeKeyEvent(KeyEvent_t *key){
+  switch(currentMenu){
+	  case STATE_MENU:
+			if(key->key_event == 0){
+				mainMenuSelection = (mainMenuSelection + 1) % 3;
+
+			}else if(key->key_event == 1){
+				if(mainMenuSelection == 0){
+				  currentMenu = STATE_LIGHT_SENSOR;
+				}else if(mainMenuSelection == 1){
+				  currentMenu = STATE_TEMP_SENSOR;
+				}else{
+				  currentMenu = STATE_DHT22_SENSOR;
+				}
+//			  currentMenu = (mainMenuSelection == 0)?STATE_LIGHT_SENSOR:STATE_TEMP_SENSOR;
+			}
+			break;
+
+		case STATE_LIGHT_SENSOR:
+		case STATE_TEMP_SENSOR:
+		case STATE_DHT22_SENSOR:
+			if(key->key_event == 1){
+			  currentMenu = STATE_MENU;
+			}
+			break;
+	}
+}
 
 /**
  * @brief OLED 初始化
  * @note 通过I2C总线将初始化参数按照命令字节+参数格式发送
  */
-void OLED_Init(void){
+void OLed_Init(void){
   printf("OLED_Init...\r\n");
 	//方法1:初始化参数
-//  uint8_t init_cmds[] = {
-//			0xAE,       // 关闭显示
-//			0xD5, 0x80, // 时钟分频
-//			0xA8, 0x3F, // 多路复用率（64行）
-//			0xD3, 0x00, // 显示偏移
-//			0x40,       // 起始行
-//			0x8D, 0x14, // 电荷泵使能（关键！）
-//			0xA1,       // 段重映射
-//			0xC8,       // COM 扫描方向
-//			0xDA, 0x12, // COM 引脚配置
-//			0x81, 0xCF, // 对比度
-//			0xD9, 0xF1, // 预充电周期
-//			0xDB, 0x40, // VCOM 电压
-//		  0x20, 0x02, // 【关键】设置为页寻址模式 (Page Addressing Mode)
-//			0xA4,       // 全局显示开启
-//			0xA6,       // 正常显示（非反色）
-//			0xAF        // 开启显示
-//	};
-//	for(uint8_t i = 0; i < sizeof(init_cmds); i++)
-//	{
-//	  uint8_t buf[2] = {0x00, init_cmds[i]};
-//		if(HAL_I2C_Master_Transmit(&hi2c1, OLED_WRITE_ADDR, buf, 2, 100) != HAL_OK)
-//		{
-//		   printf("HAL_I2C_Master_Transmit failed!...\r\n");
-//		}
+  uint8_t init_cmds[] = {
+			0xAE,       // 关闭显示
+			0xD5, 0x80, // 时钟分频
+			0xA8, 0x3F, // 多路复用率（64行）
+			0xD3, 0x00, // 显示偏移
+			0x40,       // 起始行
+			0x8D, 0x14, // 电荷泵使能（关键！）
+			0xA1,       // 段重映射
+			0xC8,       // COM 扫描方向
+			0xDA, 0x12, // COM 引脚配置
+			0x81, 0xCF, // 对比度
+			0xD9, 0xF1, // 预充电周期
+			0xDB, 0x40, // VCOM 电压
+		  0x20, 0x02, // 【关键】设置为页寻址模式 (Page Addressing Mode)
+			0xA4,       // 全局显示开启
+			0xA6,       // 正常显示（非反色）
+			0xAF        // 开启显示
+	};
+	for(uint8_t i = 0; i < sizeof(init_cmds); i++)
+	{
+	  uint8_t buf[2] = {0x00, init_cmds[i]};
+		if(HAL_I2C_Master_Transmit(&hi2c1, OLED_WRITE_ADDR, buf, 2, 100) != HAL_OK)
+		{
+		   printf("HAL_I2C_Master_Transmit failed!...\r\n");
+		}
 
-//		HAL_Delay(1);
-//	}
+		HAL_Delay(1);
+	}
 	
 	//注册回调函数，但是Sendbuffer存在问题，使用了
 	u8g2_Setup_ssd1306_i2c_128x64_noname_f(&u8g2, U8G2_R0,  My_U8x8_I2c_HwSend,  My_gpio_and_delay_cb);
-	//方法二:u8g2库函数初始化
-	u8g2_InitDisplay(&u8g2);
+	//	//方法二:u8g2库函数初始化，长时间断点重新上电无显示
+//	u8g2_InitDisplay(&u8g2);
 	//清理u8g2本地映射的显存空间
 	u8g2_ClearBuffer(&u8g2);
 	//手动发送buffer给oled的显存空间
@@ -77,21 +160,26 @@ void OLED_Init(void){
  * @param menustate 菜单状态机
  * @note 由菜单状态机决定当前显示界面
  */
-void OLED_UpdateDisplay(MenuState_t menustate){
+static void OLED_UpdateDisplay(MenuState_t menustate){
   switch(menustate){
 	  case STATE_MENU:
 			//主菜单
 			OLED_ShowMenu(mainMenuSelection);
 			break;
-		
+
 		case STATE_LIGHT_SENSOR:
 			//光敏测试，获取寄存器值
-			OLED_ShowLightTest(RS485_Modbus_GetReg(0));
+			OLED_ShowLightTest(ShareData_GetReg(0));
 			break;
-		
+
 		case STATE_TEMP_SENSOR:
 			//热敏测试
-			OLED_ShowTempInfo(RS485_Modbus_GetReg(1));
+			OLED_ShowTempInfo(ShareData_GetReg(1));
+			break;
+
+		case STATE_DHT22_SENSOR:
+			//DHT22 温湿度数据
+		  OLED_ShowDHT22info();
 			break;
 	}
 }
@@ -104,9 +192,9 @@ static void OLED_ShowLightTest(uint16_t percent){
   char buf[32];
 	u8g2_ClearBuffer(&u8g2);//清理ram上的显存镜像空间
 	u8g2_SetFont(&u8g2, u8g2_font_ncenB08_tr);//设置字体
-	
+
 	u8g2_DrawStr(&u8g2, 0, 10, "Light Test");//字体本上有高度，所以需要从10开始
-	
+
 	snprintf(buf, sizeof(buf), "Light value:%d", percent);//拼接字符换后传递给buf数组
 	u8g2_DrawStr(&u8g2, 0, 26, buf);//从第一列开始，16高度下开始
 
@@ -135,6 +223,29 @@ static void OLED_ShowTempInfo(uint16_t temp){
 	Manual_Sendbuffer(&u8g2);
 }
 
+static void OLED_ShowDHT22info(){
+  char buffer[32];
+	u8g2_ClearBuffer(&u8g2);
+	u8g2_SetFont(&u8g2, u8g2_font_ncenB08_tr);
+
+	//温度
+	u8g2_DrawStr(&u8g2, 0, 10, "DHT22 Test:");
+	uint16_t temp_int = ShareData_GetReg(2) / 10;
+	uint16_t temp_float = ShareData_GetReg(2) % 10;
+	snprintf(buffer, sizeof(buffer), "Temp: %d.%d C",temp_int, temp_float);
+	u8g2_DrawStr(&u8g2, 0, 26, buffer);
+
+	//湿度
+	uint16_t humidity_int = ShareData_GetReg(3) /10;
+	uint16_t humidity_float = ShareData_GetReg(3) %10;
+	snprintf(buffer, sizeof(buffer), "humidity: %d.%d %%",humidity_int, humidity_float);
+	u8g2_DrawStr(&u8g2, 0, 42, buffer);
+
+	u8g2_DrawStr(&u8g2, 0, 58, "Long press to exit");
+	Manual_Sendbuffer(&u8g2);
+}
+
+
 /**
  * @brief 主菜单界面
  * @param hand 实际指针箭头
@@ -146,12 +257,15 @@ static void OLED_ShowMenu(uint8_t hand)
 		if(hand == 0){
 		  u8g2_DrawStr(&u8g2, 0, 10, ">  1. Light Test");
 		  u8g2_DrawStr(&u8g2, 0, 26, "     2. Temp Test");
+			u8g2_DrawStr(&u8g2, 0, 42, "     3. DHT22 Test");
 		}else if(hand == 1){
 		  u8g2_DrawStr(&u8g2, 0, 10, "     1. Light Test");
 		  u8g2_DrawStr(&u8g2, 0, 26, ">  2. Temp Test");
+			u8g2_DrawStr(&u8g2, 0, 42, "     3. DHT22 Test");
 		}else if(hand == 2){
 			u8g2_DrawStr(&u8g2, 0, 10, "     1. Light Test");
 		  u8g2_DrawStr(&u8g2, 0, 26, "     2. Temp Test");
+			u8g2_DrawStr(&u8g2, 0, 42, ">  3. DHT22 Test");
 		}
 		Manual_Sendbuffer(&u8g2);
 }
@@ -256,7 +370,6 @@ uint8_t My_gpio_and_delay_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *a
  */
 static void Manual_Sendbuffer(u8g2_t *u8g2)
 {
-  
 	uint8_t tx_buf[129];
 	uint8_t *data = (uint8_t *)u8g2->tile_buf_ptr;
 	tx_buf[0] = 0x40;

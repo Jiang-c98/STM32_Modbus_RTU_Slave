@@ -4,16 +4,40 @@
  * @author  Cui Jiang
  * @date    2025-06-07
  */
- 
-#include "FreeRTOS.h"
-#include "semphr.h"
-#include "User\key.h"
-#include "usart.h"//打印使用
-#include "queue.h"
 
+/* 头文件包含 */
+#include "User/key.h"
+#include "usart.h"//打印使用
+
+/* 全局变量 */
 KeyEvent_t key;//按键
 QueueHandle_t xKeySemaphore;//定义按键队列句柄-信号量
 QueueHandle_t xKeyQueue;
+
+/* 私有函数声明 */
+static void Key_Scan(void);
+
+/**
+ * @brief Key任务
+ * @note  Key任务
+ */
+void vKey_Task(void * Parameters){
+	for(;;){
+		Key_Scan();
+		vTaskDelay(pdMS_TO_TICKS(20));
+	}
+}
+
+/**
+ * @brief Key任务
+ * @note 启动Key功能
+ */
+void StartKeyTask(void){
+	//创建Key任务
+	if(xTaskCreate(vKey_Task, "key", 256, NULL, 1, NULL) != pdPASS){
+		printf("Key_Task create failed!\r\n");
+	}
+}
 
 /**
  * @brief key 初始化
@@ -49,7 +73,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
  * @brief 按键扫描函数
  * @note 双边沿中断，获取二值量、读GPIO状态、非阻塞计时的时间差判断长短按，再发送队列
  */
-void Key_Scan(void){
+static void Key_Scan(void){
 	static uint32_t press_start_time = 0;
   static uint8_t press_state = 0;
 	if(xSemaphoreTake(xKeySemaphore, portMAX_DELAY) == pdTRUE){//获取信号量
